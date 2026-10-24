@@ -5,9 +5,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import streamlit as st
-from database.queries import get_all_internships
+from database.queries import get_all_internships, search_internships
 
 st.title("Testing Query Functions")
+
+st.subheader("TEST 1: all internship")
 
 if st.button("Run get_all_internships"):
     try:
@@ -31,3 +33,38 @@ if st.button("Run get_all_internships"):
     except Exception as error:
         st.error("Query failed")
         st.exception(error)
+
+st.divider()
+
+st.subheader("Test 2: Search Internships")
+
+with st.form("search_form"):
+    title = st.text_input("Internship title", placeholder="e.g. Python")
+    location = st.text_input("Location", placeholder="e.g. Remote")
+    min_stipend = st.number_input(
+        "Minimum stipend",
+        min_value=0,
+        value=0,
+        step=1000,
+    )
+
+    search_clicked = st.form_submit_button("Search Internships")
+
+if search_clicked:
+    try:
+        results = search_internships(
+            title=title,
+            location=location,
+            min_stipend=min_stipend if min_stipend > 0 else None,
+        )
+
+        st.success(f"Found {len(results)} internships.")
+
+        if results.empty:
+            st.info("No internships match these filters.")
+        else:
+            st.dataframe(results, use_container_width=True, hide_index=True)
+
+    except Exception as e:
+        st.error("Search failed.")
+        st.exception(e)
