@@ -2,6 +2,7 @@ from database.connection import (run_query, get_connection)
 from sqlalchemy import text
 
 
+# internship queries
 def get_all_internships():
     return run_query(
         """
@@ -75,6 +76,7 @@ def search_internships(
     return run_query(query, params=params)
 
 
+# application queries
 def get_student_applications(student_id):
     return run_query(
         """
@@ -162,6 +164,7 @@ def get_application_history(application_id):
     )
 
 
+# recruiter queries
 def get_recruiter_internships(recruiter_id):
     return run_query(
         """
@@ -268,6 +271,102 @@ def update_application_status(
             updated_id = result.scalar_one_or_none()
             session.commit()
             return updated_id
+
+        except Exception:
+            session.rollback()
+            raise
+
+
+# Students queries
+
+# fetch student account details
+def get_student_profile(student_id):
+    return run_query(
+        """
+        SELECT
+            u.user_id AS student_id,
+            u.full_name,
+            u.email,
+            u.is_active,
+            sp.university,
+            sp.degree,
+            sp.graduation_year,
+            sp.cgpa,
+            sp.city,
+            sp.phone,
+            sp.github_url,
+            sp.linkedin_url,
+            sp.portfolio_url,
+            sp.resume_url,
+            sp.bio
+        FROM users AS u
+        JOIN student_profiles AS sp
+            ON sp.student_id = u.user_id
+        WHERE u.user_id = :student_id
+          AND u.role = 'student'
+        """,
+        params={"student_id": student_id},
+    )
+
+# Update a student's profile without changing account credentials
+def update_student_profile(
+    student_id,
+    university,
+    degree,
+    graduation_year,
+    cgpa,
+    city,
+    phone,
+    github_url,
+    linkedin_url,
+    portfolio_url,
+    resume_url,
+    bio,
+):
+
+    conn = get_connection()
+
+    with conn.session as session:
+        try:
+            result = session.execute(
+                text("""
+                    UPDATE student_profiles AS sp
+                    SET university = :university,
+                        degree = :degree,
+                        graduation_year = :graduation_year,
+                        cgpa = :cgpa,
+                        city = :city,
+                        phone = :phone,
+                        github_url = :github_url,
+                        linkedin_url = :linkedin_url,
+                        portfolio_url = :portfolio_url,
+                        resume_url = :resume_url,
+                        bio = :bio
+                    FROM users AS u
+                    WHERE sp.student_id = :student_id
+                      AND u.user_id = sp.student_id
+                      AND u.role = 'student'
+                    RETURNING sp.student_id
+                """),
+                {
+                    "student_id": student_id,
+                    "university": university.strip() or None,
+                    "degree": degree.strip() or None,
+                    "graduation_year": graduation_year,
+                    "cgpa": cgpa,
+                    "city": city.strip() or None,
+                    "phone": phone.strip() or None,
+                    "github_url": github_url.strip() or None,
+                    "linkedin_url": linkedin_url.strip() or None,
+                    "portfolio_url": portfolio_url.strip() or None,
+                    "resume_url": resume_url.strip() or None,
+                    "bio": bio.strip() or None,
+                },
+            )
+
+            updated_student_id = result.scalar_one_or_none()
+            session.commit()
+            return updated_student_id
 
         except Exception:
             session.rollback()
