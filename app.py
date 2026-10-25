@@ -2,6 +2,7 @@ import streamlit as st
 
 from app_pages.common import login
 from app_pages.recruiter import dashboard, manage_internships , applications
+from app_pages.student import dashboard as student_dashboard, profile as student_profile, browse_internships
 from services.auth_service import get_current_user, logout_user
 
 st.set_page_config(page_title="Internship Finder", page_icon="🎓", layout="wide")
@@ -34,8 +35,22 @@ elif user["role"] == "recruiter":
 else:  # student
     pages = {
         "Student": [
-            st.Page(student_placeholder, title="Home",
-                    url_path="student-home", default=True),
+            st.Page(
+                student_dashboard.render,
+                title="Dashboard",
+                url_path="student-dashboard",
+                default=True,
+            ),
+            st.Page(
+                student_profile.render,
+                title="My Profile",
+                url_path="student-profile",
+            ),
+            st.Page(
+                browse_internships.render,
+                title="Browse Internships",
+                url_path="browse-internships",
+            )
         ]
     }
 

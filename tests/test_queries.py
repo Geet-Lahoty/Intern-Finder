@@ -5,7 +5,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import streamlit as st
-from database.queries import get_all_internships, search_internships
+from database.queries import (get_all_internships, search_internships)
 
 st.title("Testing Query Functions")
 
@@ -36,19 +36,25 @@ if st.button("Run get_all_internships"):
 
 st.divider()
 
-st.subheader("Test 2: Search Internships")
+st.subheader("Test 2: Search and Filter Internships")
 
 with st.form("search_form"):
-    title = st.text_input("Internship title", placeholder="e.g. Python")
-    location = st.text_input("Location", placeholder="e.g. Remote")
+    title = st.text_input("Title contains", placeholder="Python")
+    location = st.text_input("Location contains", placeholder="Pune")
+
+    work_mode = st.selectbox(
+        "Work mode",
+        ["Any", "remote", "hybrid", "on_site"],
+    )
+
     min_stipend = st.number_input(
-        "Minimum stipend",
+        "Minimum monthly stipend (₹)",
         min_value=0,
         value=0,
         step=1000,
     )
 
-    search_clicked = st.form_submit_button("Search Internships")
+    search_clicked = st.form_submit_button("Search")
 
 if search_clicked:
     try:
@@ -56,15 +62,21 @@ if search_clicked:
             title=title,
             location=location,
             min_stipend=min_stipend if min_stipend > 0 else None,
+            work_mode="" if work_mode == "Any" else work_mode,
         )
 
-        st.success(f"Found {len(results)} internships.")
+        st.success(f"Found {len(results)} matching internships.")
 
         if results.empty:
-            st.info("No internships match these filters.")
+            st.info("No matching internships found.")
         else:
-            st.dataframe(results, use_container_width=True, hide_index=True)
+            st.dataframe(
+                results,
+                use_container_width=True,
+                hide_index=True,
+            )
 
     except Exception as e:
         st.error("Search failed.")
         st.exception(e)
+
