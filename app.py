@@ -1,7 +1,7 @@
 import streamlit as st
 
 from app_pages.common import login
-from app_pages.recruiter import dashboard, manage_internships
+from app_pages.recruiter import dashboard, manage_internships , applications
 from services.auth_service import get_current_user, logout_user
 
 st.set_page_config(page_title="Internship Finder", page_icon="🎓", layout="wide")
@@ -11,6 +11,7 @@ def student_placeholder():
     # TEAMMATE: replace with st.Page(...) entries pointing at app_pages/student/*.py
     st.title("Student area")
     st.info("Student pages are being built.")
+    
 
 
 user = get_current_user()
@@ -25,6 +26,8 @@ elif user["role"] == "recruiter":
                     url_path="recruiter-dashboard", default=True),
             st.Page(manage_internships.render, title="Manage Internships",
                     url_path="recruiter-internships"),
+            st.Page(applications.render, title="Applications",
+                    url_path="recruiter-applications"),
         ]
     }
 

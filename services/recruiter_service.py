@@ -1,7 +1,7 @@
 """Recruiter business rules and transaction boundaries."""
 from datetime import date
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError , SQLAlchemyError
 
 from database import recruiter_queries as rq
 from database.connection import get_connection
@@ -158,6 +158,46 @@ def change_internship_status(recruiter_id: int, internship_id: int, new_status: 
             if rq.update_internship_status(session, internship_id, recruiter_id, new_status) != 1:
                 raise ServiceError("Internship not found.")
             session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        # ---------- Application review (Step 4) ----------
+
+# Allowed application status transitions for a recruiter.
+APPLICATION_TRANSITIONS = {
+    "pending": {"shortlisted", "rejected", "accepted"},
+    "shortlisted": {"accepted", "rejected"},
+    "accepted": set(),
+    "rejected": set(),
+    "withdrawn": set(),
+}
+
+
+def change_application_status(recruiter_id: int, application_id: int, new_status: str) -> None:
+    """Lock the application, validate the transition against its CURRENT status,
+    then update. The history row is written by the database trigger in the same
+    transaction. A stale page or a double click fails the transition check
+    instead of overwriting a newer decision."""
+    if new_status not in rq.APPLICATION_STATUSES:
+        raise ServiceError("Invalid status.")
+
+    with get_connection().session as session:
+        try:
+            current = rq.lock_owned_application_status(session, application_id, recruiter_id)
+            if current is None:
+                raise ServiceError("Application not found.")
+            if new_status not in APPLICATION_TRANSITIONS.get(current, set()):
+                raise ServiceError(
+                    f"Cannot change an application from '{current}' to '{new_status}'. "
+                    "It may have been updated already; refresh the page."
+                )
+
+            if rq.update_application_status(session, application_id, recruiter_id, new_status) != 1:
+                raise ServiceError("Application not found.")
+            session.commit()
+        except SQLAlchemyError as error:
+            session.rollback()
+            raise ServiceError("The database could not save this change. Please try again.") from error
         except Exception:
             session.rollback()
             raise
