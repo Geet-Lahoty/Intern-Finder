@@ -1,174 +1,283 @@
-import sys
-from pathlib import Path
+"""Recruiter-side tests: ownership, constraints, transitions, trigger history.
+Run from the project root:  python -m pytest tests/test_recruiter.py -v"""
+from datetime import date, timedelta
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
-import streamlit as st
+from database import recruiter_queries as rq
+from database.seed import hash_password
+from services import recruiter_service as svc
+from services.auth_service import verify_password
 
-from database.connection import run_query
-from database.queries import (
-    get_recruiter_internships,
-    get_internship_applicants,
-    update_application_status,
-)
 
-st.title("Recruiter Query Testing")
+# ---------- helpers ----------
 
-# Recruiter selection
-recruiters = run_query(
-    """
-    SELECT user_id, full_name, email
-    FROM users
-    WHERE role = 'recruiter'
-      AND is_active = TRUE
-    ORDER BY full_name
-    """
-)
-
-if recruiters.empty:
-    st.warning("No recruiters found. Run the seed script first.")
-    st.stop()
-
-recruiter_options = {
-    f"{r.full_name} ({r.email})": int(r.user_id)
-    for r in recruiters.itertuples()
-}
-
-selected_recruiter = st.selectbox(
-    "Select recruiter",
-    list(recruiter_options.keys()),
-)
-
-recruiter_id = recruiter_options[selected_recruiter]
-
-# Section 1: Recruiter internships
-st.divider()
-st.subheader("1. My Internships")
-
-try:
-    internships = get_recruiter_internships(recruiter_id)
-
-    if internships.empty:
-        st.info("This recruiter has not posted any internships.")
-    else:
-        st.dataframe(
-            internships,
-            width="stretch",
-            hide_index=True,
-        )
-
-        st.metric("Total internships", len(internships))
-
-except Exception as e:
-    st.error("Failed to load internships.")
-    st.exception(e)
-
-# Section 2: View applicants
-st.divider()
-st.subheader("2. View Applicants")
-
-if not internships.empty:
-    internship_options = {
-        f"{r.title} (ID: {r.internship_id})": int(r.internship_id)
-        for r in internships.itertuples()
+def valid_data(**overrides):
+    data = {
+        "title": "Pytest Intern",
+        "description": "Created by an automated test.",
+        "location": "Remote",
+        "work_mode": "remote",
+        "stipend_monthly": 1000.0,
+        "duration_months": 3,
+        "openings": 1,
+        "deadline": date.today() + timedelta(days=30),
     }
+    data.update(overrides)
+    return data
 
-    selected_internship = st.selectbox(
-        "Choose internship",
-        list(internship_options.keys()),
-    )
 
-    internship_id = internship_options[selected_internship]
+def make_internship(recruiter_id, publish=True, **overrides):
+    return svc.create_internship(recruiter_id, valid_data(**overrides), [], publish)
 
-    if st.button("Load Applicants"):
-        try:
-            applicants = get_internship_applicants(
-                internship_id,
-                recruiter_id,
+
+def make_application(engine, world, internship_id):
+    """Inserts a pending application the way the student side does:
+    status_changed_by = the student."""
+    with engine.begin() as c:
+        return c.execute(
+            text("""
+                INSERT INTO applications
+                    (internship_id, student_id, status, status_changed_by)
+                VALUES (:i, :s, 'pending', :s)
+                RETURNING application_id
+            """),
+            {"i": internship_id, "s": world["student"]},
+        ).scalar_one()
+
+
+def scalar(engine, sql, **params):
+    with engine.connect() as c:
+        return c.execute(text(sql), params).scalar()
+
+
+def history_rows(engine, application_id):
+    with engine.connect() as c:
+        return c.execute(
+            text("""
+                SELECT old_status, new_status, changed_by
+                FROM application_status_history
+                WHERE application_id = :a
+                ORDER BY history_id
+            """),
+            {"a": application_id},
+        ).all()
+
+
+# ---------- password verification (no database needed) ----------
+
+def test_verify_password_accepts_correct_and_rejects_wrong():
+    stored = hash_password("DemoPass123!")
+    assert verify_password("DemoPass123!", stored) is True
+    assert verify_password("wrong", stored) is False
+
+
+def test_verify_password_rejects_malformed_hash():
+    assert verify_password("anything", "not-a-valid-hash") is False
+
+
+# ---------- creating internships ----------
+
+def test_create_published_internship_is_owned_and_open(engine, world):
+    iid = make_internship(world["a"], publish=True)
+    assert scalar(engine, "SELECT posted_by FROM internships WHERE internship_id=:i", i=iid) == world["a"]
+    assert scalar(engine, "SELECT status FROM internships WHERE internship_id=:i", i=iid) == "open"
+    assert scalar(engine, "SELECT company_id FROM internships WHERE internship_id=:i", i=iid) == world["company"]
+
+
+def test_create_unpublished_internship_is_draft(engine, world):
+    iid = make_internship(world["a"], publish=False)
+    assert scalar(engine, "SELECT status FROM internships WHERE internship_id=:i", i=iid) == "draft"
+
+
+def test_create_rejects_zero_openings(world):
+    with pytest.raises(svc.ServiceError):
+        make_internship(world["a"], openings=0)
+
+
+def test_create_rejects_past_deadline(world):
+    with pytest.raises(svc.ServiceError):
+        make_internship(world["a"], deadline=date.today() - timedelta(days=1))
+
+
+def test_create_rejects_blank_title(world):
+    with pytest.raises(svc.ServiceError):
+        make_internship(world["a"], title="   ")
+
+
+def test_database_check_constraint_is_the_last_line_of_defence(engine, world):
+    """Bypass the service entirely: the schema itself must reject bad data."""
+    with pytest.raises(IntegrityError, match="internships_openings_positive"):
+        with engine.begin() as c:
+            c.execute(
+                text("""
+                    INSERT INTO internships
+                        (company_id, posted_by, title, description, work_mode,
+                         duration_months, openings)
+                    VALUES (:c, :p, 't', 'd', 'remote', 3, 0)
+                """),
+                {"c": world["company"], "p": world["a"]},
             )
 
-            if applicants.empty:
-                st.info("No applicants found for this internship.")
-            else:
-                st.dataframe(
-                    applicants,
-                    width="stretch",
-                    hide_index=True,
-                )
-        except Exception as e:
-            st.error("Failed to load applicants.")
-            st.exception(e)
 
-    # Section 3: Update status
-    st.divider()
-    st.subheader("3. Update Application Status")
+# ---------- ownership of internships ----------
 
-    try:
-        applicants = get_internship_applicants(
-            internship_id,
-            recruiter_id,
-        )
+def test_other_recruiter_cannot_edit_internship(engine, world):
+    iid = make_internship(world["a"], title="Original title")
+    with pytest.raises(svc.ServiceError):
+        svc.update_internship(world["b"], iid, valid_data(title="Hacked"), [])
+    assert scalar(engine, "SELECT title FROM internships WHERE internship_id=:i", i=iid) == "Original title"
 
-        if applicants.empty:
-            st.info("No applications available to update.")
-        else:
-            applicant_options = {
-                f"{r.full_name} — Application #{r.application_id} "
-                f"({r.application_status})": int(r.application_id)
-                for r in applicants.itertuples()
-            }
 
-            with st.form("update_status_form"):
-                selected_application = st.selectbox(
-                    "Select application",
-                    list(applicant_options.keys()),
-                )
+def test_other_recruiter_cannot_change_internship_status(engine, world):
+    iid = make_internship(world["a"])
+    with pytest.raises(svc.ServiceError):
+        svc.change_internship_status(world["b"], iid, "closed")
+    assert scalar(engine, "SELECT status FROM internships WHERE internship_id=:i", i=iid) == "open"
 
-                new_status = st.selectbox(
-                    "New status",
-                    [
-                        "pending",
-                        "shortlisted",
-                        "rejected",
-                        "accepted",
-                        "withdrawn",
-                    ],
-                )
 
-                confirm = st.checkbox(
-                    "Confirm this status change"
-                )
+def test_owner_can_edit_internship(engine, world):
+    iid = make_internship(world["a"])
+    svc.update_internship(world["a"], iid, valid_data(title="New title"), [])
+    assert scalar(engine, "SELECT title FROM internships WHERE internship_id=:i", i=iid) == "New title"
 
-                submitted = st.form_submit_button("Update Status")
 
-                if submitted:
-                    if not confirm:
-                        st.warning("Please confirm the status change.")
-                    else:
-                        try:
-                            updated_id = update_application_status(
-                                applicant_options[selected_application],
-                                recruiter_id,
-                                new_status,
-                            )
+def test_recruiter_lists_only_own_internships(world):
+    iid_a = make_internship(world["a"])
+    make_internship(world["b"])
+    listed = rq.get_recruiter_internships(world["a"])
+    assert listed["internship_id"].tolist() == [iid_a]
+    assert rq.get_owned_internship(iid_a, world["b"]).empty
 
-                            if updated_id is not None:
-                                st.success(
-                                    f"Application #{updated_id} updated to "
-                                    f"'{new_status}'."
-                                )
-                                st.rerun()
-                            else:
-                                st.warning(
-                                    "No change was made. The application may already "
-                                    "have this status or may not belong to this recruiter."
-                                )
 
-                        except Exception as e:
-                            st.error("Failed to update application status.")
-                            st.exception(e)
+# ---------- internship status transitions ----------
 
-    except Exception as e:
-        st.error("Failed to update application status.")
-        st.exception(e)
+def test_internship_valid_transition(engine, world):
+    iid = make_internship(world["a"])
+    svc.change_internship_status(world["a"], iid, "closed")
+    assert scalar(engine, "SELECT status FROM internships WHERE internship_id=:i", i=iid) == "closed"
+
+
+def test_internship_invalid_transition_is_rejected(world):
+    iid = make_internship(world["a"])
+    svc.change_internship_status(world["a"], iid, "cancelled")
+    with pytest.raises(svc.ServiceError):          # cancelled is final
+        svc.change_internship_status(world["a"], iid, "open")
+
+
+def test_cancelled_internship_cannot_be_edited(world):
+    iid = make_internship(world["a"])
+    svc.change_internship_status(world["a"], iid, "cancelled")
+    with pytest.raises(svc.ServiceError):
+        svc.update_internship(world["a"], iid, valid_data(title="Late edit"), [])
+
+
+# ---------- dashboard aggregates ----------
+
+def test_dashboard_stats_match_data(engine, world):
+    open_id = make_internship(world["a"], publish=True)
+    make_internship(world["a"], publish=False)       # draft
+    make_application(engine, world, open_id)         # pending
+
+    s = rq.get_dashboard_stats(world["a"]).iloc[0]
+    assert int(s["total_internships"]) == 2
+    assert int(s["open_internships"]) == 1
+    assert int(s["total_applications"]) == 1
+    assert int(s["awaiting_review"]) == 1
+
+    empty = rq.get_dashboard_stats(world["b"]).iloc[0]
+    assert int(empty["total_internships"]) == 0
+    assert int(empty["total_applications"]) == 0
+
+
+# ---------- applications: visibility ----------
+
+def test_applications_visible_only_to_owner(engine, world):
+    iid = make_internship(world["a"])
+    app_id = make_application(engine, world, iid)
+
+    assert rq.get_recruiter_applications(world["a"])["application_id"].tolist() == [app_id]
+    assert rq.get_recruiter_applications(world["b"]).empty
+    assert not rq.get_application_detail(app_id, world["a"]).empty
+    assert rq.get_application_detail(app_id, world["b"]).empty
+    assert rq.get_application_history(app_id, world["b"]).empty
+
+
+def test_application_filters(engine, world):
+    iid = make_internship(world["a"])
+    make_application(engine, world, iid)
+
+    assert len(rq.get_recruiter_applications(world["a"], internship_id=iid, status="pending")) == 1
+    assert rq.get_recruiter_applications(world["a"], status="accepted").empty
+    with pytest.raises(ValueError):
+        rq.get_recruiter_applications(world["a"], status="not-a-status")
+
+
+def test_duplicate_application_is_rejected_by_unique_constraint(engine, world):
+    iid = make_internship(world["a"])
+    make_application(engine, world, iid)
+    with pytest.raises(IntegrityError, match="applications_student_internship_uq"):
+        make_application(engine, world, iid)
+
+
+# ---------- reviewing applications: ownership, transitions, trigger ----------
+
+def test_trigger_logs_application_insert(engine, world):
+    iid = make_internship(world["a"])
+    app_id = make_application(engine, world, iid)
+    assert history_rows(engine, app_id) == [(None, "pending", world["student"])]
+
+
+def test_recruiter_status_change_is_logged_with_recruiter_as_actor(engine, world):
+    iid = make_internship(world["a"])
+    app_id = make_application(engine, world, iid)
+
+    svc.change_application_status(world["a"], app_id, "shortlisted")
+
+    assert scalar(engine, "SELECT status FROM applications WHERE application_id=:a", a=app_id) == "shortlisted"
+    assert history_rows(engine, app_id) == [
+        (None, "pending", world["student"]),
+        ("pending", "shortlisted", world["a"]),
+    ]
+
+
+def test_other_recruiter_cannot_review_application(engine, world):
+    iid = make_internship(world["a"])
+    app_id = make_application(engine, world, iid)
+
+    with pytest.raises(svc.ServiceError):
+        svc.change_application_status(world["b"], app_id, "accepted")
+
+    assert scalar(engine, "SELECT status FROM applications WHERE application_id=:a", a=app_id) == "pending"
+    assert len(history_rows(engine, app_id)) == 1    # nothing new logged
+
+
+@pytest.mark.parametrize("bad_target", ["pending", "withdrawn", "banana"])
+def test_recruiter_cannot_set_disallowed_status(engine, world, bad_target):
+    iid = make_internship(world["a"])
+    app_id = make_application(engine, world, iid)
+    with pytest.raises(svc.ServiceError):
+        svc.change_application_status(world["a"], app_id, bad_target)
+
+
+def test_final_status_cannot_be_changed_again(engine, world):
+    """Simulates the stale-page case: a second decision after the first one."""
+    iid = make_internship(world["a"])
+    app_id = make_application(engine, world, iid)
+
+    svc.change_application_status(world["a"], app_id, "accepted")
+    with pytest.raises(svc.ServiceError):
+        svc.change_application_status(world["a"], app_id, "rejected")
+
+    assert scalar(engine, "SELECT status FROM applications WHERE application_id=:a", a=app_id) == "accepted"
+    assert len(history_rows(engine, app_id)) == 2    # insert + one change only
+
+
+def test_shortlisted_can_then_be_accepted(engine, world):
+    iid = make_internship(world["a"])
+    app_id = make_application(engine, world, iid)
+    svc.change_application_status(world["a"], app_id, "shortlisted")
+    svc.change_application_status(world["a"], app_id, "accepted")
+    assert [r[1] for r in history_rows(engine, app_id)] == ["pending", "shortlisted", "accepted"]
