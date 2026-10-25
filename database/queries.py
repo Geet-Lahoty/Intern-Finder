@@ -75,6 +75,17 @@ def search_internships(
 
     return run_query(query, params=params)
 
+# get skills for an internship
+def get_internship_skills():
+    return  run_query("""
+        SELECT
+            internship_id,
+            skill_id,
+            skill_name
+        FROM internship_skills
+        JOIN skills USING (skill_id)
+    """
+    )
 
 # application queries
 def get_student_applications(student_id):

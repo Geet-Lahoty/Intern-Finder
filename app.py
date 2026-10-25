@@ -1,7 +1,8 @@
 import streamlit as st
 
 from app_pages.common import login
-from app_pages.student import dashboard as student_dashboard, profile as student_profile, browse_internships
+from app_pages.student import (dashboard as student_dashboard, profile as student_profile, 
+                               browse_internships, my_applications, my_skills, my_projects)
 from app_pages.recruiter import dashboard, manage_internships
 from services.auth_service import get_current_user, logout_user
 
@@ -41,7 +42,22 @@ else:  # student
                 browse_internships.render,
                 title="Browse Internships",
                 url_path="browse-internships",
-            )
+            ),
+            st.Page(
+                my_applications.render,
+                title="My Applications",
+                url_path="my-applications",
+            ),
+            st.Page(
+                my_skills.render,
+                title="My skills",
+                url_path="my-skills"
+            ),
+            st.Page(
+                my_projects.render,
+                title="My Projects",
+                url_path="my-projects",
+            ),
         ]
     }
 

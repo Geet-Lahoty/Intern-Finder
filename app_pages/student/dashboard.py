@@ -1,193 +1,196 @@
+import pandas as pd
 import streamlit as st
 
 from services.auth_service import require_role
-from database.queries import (
-    get_student_applications,
-    get_student_profile,
-)
+from database.queries import get_student_applications
 
 
 def render():
-    # Protect the page and identify the logged-in student.
+    # --------------------------------------------------
+    # AUTHENTICATION
+    # --------------------------------------------------
     user = require_role("student")
+
+    if not user:
+        return
+
     student_id = user["user_id"]
 
+    # --------------------------------------------------
+    # PAGE HEADER
+    # --------------------------------------------------
     st.title("🎓 Student Dashboard")
-    st.caption("Your internship journey starts here.")
+    st.write("Welcome back! Here's your internship application overview.")
 
-    st.markdown(f"### Welcome back, {user['full_name']}! 👋")
+    st.divider()
 
-    # Fetch the student's data.
+    # --------------------------------------------------
+    # FETCH APPLICATIONS
+    # --------------------------------------------------
     try:
         applications = get_student_applications(student_id)
-        profile = get_student_profile(student_id)
+
+        if applications is None:
+            applications = pd.DataFrame()
 
     except Exception as e:
-        st.error("Unable to load your dashboard data.")
-        st.exception(e)
-        return
+        st.error(f"Unable to load your applications: {e}")
+        applications = pd.DataFrame()
 
-    # Safely handle empty query results.
-    if applications is None:
-        applications = []
-
-    if profile is None or profile.empty:
-        st.warning(
-            "Your student profile could not be found. "
-            "Please contact the administrator."
-        )
-        return
-
-    # Calculate application statistics.
-    if hasattr(applications, "empty") and not applications.empty:
+    # --------------------------------------------------
+    # APPLICATION METRICS
+    # --------------------------------------------------
+    if not applications.empty and "status" in applications.columns:
         statuses = (
             applications["status"]
             .fillna("")
             .astype(str)
+            .str.strip()
             .str.lower()
         )
 
         total_applications = len(applications)
-        pending = int((statuses == "pending").sum())
-        shortlisted = int((statuses == "shortlisted").sum())
-        accepted = int((statuses == "accepted").sum())
-
+        pending = int(statuses.eq("pending").sum())
+        shortlisted = int(statuses.eq("shortlisted").sum())
+        accepted = int(statuses.eq("accepted").sum())
+        rejected = int(statuses.eq("rejected").sum())
     else:
         total_applications = 0
         pending = 0
         shortlisted = 0
         accepted = 0
+        rejected = 0
 
-    # Dashboard metrics.
-    st.markdown("---")
+    # --------------------------------------------------
+    # METRICS DISPLAY
+    # --------------------------------------------------
     st.subheader("📊 Application Overview")
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
-    col1.metric("Applications", total_applications)
+    col1.metric("Total Applications", total_applications)
     col2.metric("Pending", pending)
     col3.metric("Shortlisted", shortlisted)
     col4.metric("Accepted", accepted)
+    col5.metric("Rejected", rejected)
 
-    # Profile completion.
-    st.markdown("---")
-    st.subheader("👤 Your Profile")
+    st.divider()
 
-    student_profile = profile.iloc[0]
-
-    profile_fields = [
-        "university",
-        "degree",
-        "graduation_year",
-        "cgpa",
-        "city",
-        "phone",
-        "bio",
-        "resume_url",
-        "github_url",
-        "linkedin_url",
-        "portfolio_url",
-    ]
-
-    completed_fields = sum(
-        1
-        for field in profile_fields
-        if (
-            field in profile.columns
-            and student_profile[field] is not None
-            and str(student_profile[field]).strip() != ""
-            and str(student_profile[field]).lower() != "nan"
-        )
-    )
-
-    total_fields = len(profile_fields)
-    completion = completed_fields / total_fields
-
-    col1, col2 = st.columns([3, 1])
-
-    with col1:
-        st.progress(completion)
-        st.caption(
-            f"{completed_fields} of {total_fields} profile fields completed"
-        )
-
-    with col2:
-        st.metric("Profile Completion", f"{completion:.0%}")
-
-    if completion < 1:
-        st.info(
-            "💡 Complete your profile to present your qualifications "
-            "and portfolio to recruiters."
-        )
-
-    # Recent applications.
-    st.markdown("---")
-    st.subheader("📋 Recent Applications")
-
-    if (
-        hasattr(applications, "empty")
-        and not applications.empty
-    ):
-        recent = applications.head(5).copy()
-
-        recent["status"] = (
-            recent["status"]
-            .fillna("unknown")
-            .astype(str)
-            .str.replace("_", " ")
-            .str.title()
-        )
-
-        display_columns = {
-            "internship_title": "Internship",
-            "company_name": "Company",
-            "status": "Status",
-            "applied_at": "Applied On",
-        }
-
-        available_columns = {
-            key: value
-            for key, value in display_columns.items()
-            if key in recent.columns
-        }
-
-        st.dataframe(
-            recent[list(available_columns)].rename(
-                columns=available_columns
-            ),
-            hide_index=True,
-            width="stretch",
-        )
-
-    else:
-        st.info(
-            "You haven't applied for any internships yet. "
-            "Explore available opportunities to get started!"
-        )
-
-    # Quick navigation.
-    st.markdown("---")
-    st.subheader("🚀 Quick Actions")
+    # --------------------------------------------------
+    # QUICK ACTIONS
+    # --------------------------------------------------
+    st.subheader("⚡ Quick Actions")
+    st.caption("Jump straight to the section you need.")
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
         if st.button(
-            "💼 Browse Internships",
-            width="stretch",
+            "🔍 Browse Internships",
+            use_container_width=True,
+            key="dashboard_browse",
         ):
             st.switch_page("app_pages/student/browse_internships.py")
 
     with col2:
         if st.button(
             "👤 My Profile",
-            width="stretch",
+            use_container_width=True,
+            key="dashboard_profile",
         ):
             st.switch_page("app_pages/student/profile.py")
 
     with col3:
         if st.button(
-            "📋 My Applications",
-            width="stretch",
+            "📄 My Applications",
+            use_container_width=True,
+            key="dashboard_applications",
         ):
             st.switch_page("app_pages/student/my_applications.py")
+
+    col4, col5 = st.columns(2)
+
+    with col4:
+        if st.button(
+            "🛠️ My Skills",
+            use_container_width=True,
+            key="dashboard_skills",
+        ):
+            st.switch_page("app_pages/student/my_skills.py")
+
+    with col5:
+        if st.button(
+            "🚀 My Projects",
+            use_container_width=True,
+            key="dashboard_projects",
+        ):
+            st.switch_page("app_pages/student/my_projects.py")
+
+    st.divider()
+
+    # --------------------------------------------------
+    # RECENT APPLICATIONS
+    # --------------------------------------------------
+    st.subheader("🕒 Recent Applications")
+
+    if applications.empty:
+        st.info(
+            "You haven't applied to any internships yet. "
+            "Browse available internships to get started!"
+        )
+
+        if st.button(
+            "Explore Internships",
+            use_container_width=True,
+            key="dashboard_explore_empty",
+        ):
+            st.switch_page("app_pages/student/browse_internships.py")
+
+    else:
+        recent_applications = applications.head(5)
+
+        for _, application in recent_applications.iterrows():
+            internship_title = application.get(
+                "internship_title", "Untitled Internship"
+            )
+            company_name = application.get(
+                "company_name", "Unknown Company"
+            )
+            status = str(
+                application.get("status", "Unknown")
+            ).replace("_", " ").title()
+
+            applied_at = application.get("applied_at")
+
+            if pd.notna(applied_at):
+                try:
+                    applied_date = pd.to_datetime(applied_at).strftime(
+                        "%d %b %Y"
+                    )
+                except (ValueError, TypeError):
+                    applied_date = str(applied_at)
+            else:
+                applied_date = "Date unavailable"
+
+            with st.container(border=True):
+                col1, col2 = st.columns([3, 1])
+
+                with col1:
+                    st.markdown(f"**{internship_title}**")
+                    st.caption(f"🏢 {company_name}")
+                    st.caption(f"Applied on: {applied_date}")
+
+                with col2:
+                    st.write("**Status**")
+                    st.write(status)
+
+        if st.button(
+            "View All Applications →",
+            use_container_width=True,
+            key="dashboard_view_all",
+        ):
+            st.switch_page("app_pages/student/my_applications.py")
+
+    st.divider()
+
+    st.caption("Keep your profile updated and continue exploring opportunities!")
