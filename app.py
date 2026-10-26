@@ -1,9 +1,9 @@
 import streamlit as st
 
-from app_pages.common import login
+from app_pages.common import login, register
 from app_pages.student import (dashboard as student_dashboard, profile as student_profile, 
                                browse_internships, my_applications, my_skills, my_projects)
-from app_pages.recruiter import dashboard, manage_internships
+from app_pages.recruiter import dashboard, manage_internships, applications
 from services.auth_service import get_current_user, logout_user
 
 st.set_page_config(page_title="Internship Finder", page_icon="🎓", layout="wide")
@@ -19,7 +19,11 @@ def student_placeholder():
 user = get_current_user()
 
 if user is None:
-    pages = [st.Page(login.render, title="Log in", url_path="login", default=True)]
+    login_page = st.Page(login.render, title="Log in", icon="🔐", url_path="login", default=True)
+    register_page = st.Page(register.render, title="Register", icon="✨", url_path="register")
+    st.session_state["_nav_login_page"] = login_page
+    st.session_state["_nav_register_page"] = register_page
+    pages = [login_page, register_page]
 
 elif user["role"] == "recruiter":
     pages = {

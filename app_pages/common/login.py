@@ -19,3 +19,12 @@ def render():
         else:
             login_user(user)
             st.rerun()
+
+    st.divider()
+    col1, col2 = st.columns([3, 2])
+    with col1:
+        st.write("Don't have an account yet?")
+    with col2:
+        reg_page = st.session_state.get("_nav_register_page")
+        if reg_page:
+            st.page_link(reg_page, label="Create an account ✨", icon="📝")
